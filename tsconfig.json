@@ -9,17 +9,15 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
 
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true
-    "allowImportingTsExtensions": true
   },
   "include": ["src"]
+}
 
-
-   
-  }
 
