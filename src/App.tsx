@@ -319,7 +319,7 @@ export default function App(){
                 </DialogHeader>
                 <div className="space-y-3">
                   <Label>Digite o PIN (senha única)</Label>
-                  <Input type="password" value={pinTyped} onChange={e=> setPinTyped(e.target.value)} placeholder="1801" />
+                  <Input type="password" value={pinTyped} onChange={e=> setPinTyped(e.target.value)} placeholder="****" />
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" onClick={()=> { setPinTyped(""); setPinOpen(false); }}>Cancelar</Button>
                     <Button onClick={()=> {
