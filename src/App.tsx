@@ -9,6 +9,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Calendar } from "@/components/ui/calendar";
 import { toast } from "sonner";
 import { Plus, Scissors, Clock, CalendarDays, Settings, Trash2 } from "lucide-react";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+
+// ===== Supabase (env) =====
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const supabase: SupabaseClient | null = (SUPABASE_URL && SUPABASE_ANON_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
 // Utilidades
 const money = (v:number)=> v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -19,15 +27,15 @@ type Service = { id:string; nome:string; duracaoMin:number; preco:number };
 type Booking = { id:string; cliente:string; telefone:string; dataISO:string; inicioMin:number; fimMin:number; servicoId:string; observacoes?:string };
 type Config = {
   nomeBarbearia: string;
-  intervaloMin: number; // tamanho do slot em minutos
-  diasAtivos: number[]; // 0=Dom ... 6=Sáb
-  horaAbertura: string; // "09:00"
-  horaFechamento: string; // "18:00"
+  intervaloMin: number;
+  diasAtivos: number[];
+  horaAbertura: string;
+  horaFechamento: string;
 };
 
-// Storage helpers
+// Storage helpers (fallback local)
 const LS_SERVICES = "barber.services.v1";
-const LS_BOOKINGS = "barber.bookings.v1";
+const LS_BOOKINGS = "barber.bookings.v1"; // apenas do DIA selecionado neste MVP com Supabase
 const LS_CONFIG   = "barber.config.v1";
 
 const defaultServices: Service[] = [
@@ -40,56 +48,120 @@ const defaultServices: Service[] = [
 const defaultConfig: Config = {
   nomeBarbearia: "Barbearia do Bairro",
   intervaloMin: 15,
-  diasAtivos: [1,2,3,4,5,6], // seg-sáb
+  diasAtivos: [1,2,3,4,5,6],
   horaAbertura: "09:00",
   horaFechamento: "19:00",
 };
 
-function loadServices(): Service[] {
+function loadServicesLocal(): Service[] {
   const raw = localStorage.getItem(LS_SERVICES);
   if (!raw) return defaultServices;
   try { return JSON.parse(raw); } catch { return defaultServices; }
 }
-function saveServices(list: Service[]) { localStorage.setItem(LS_SERVICES, JSON.stringify(list)); }
+function saveServicesLocal(list: Service[]) { localStorage.setItem(LS_SERVICES, JSON.stringify(list)); }
 
-function loadBookings(): Booking[] {
+function loadBookingsLocal(): Booking[] {
   const raw = localStorage.getItem(LS_BOOKINGS);
   if (!raw) return [];
   try { return JSON.parse(raw); } catch { return []; }
 }
-function saveBookings(list: Booking[]) { localStorage.setItem(LS_BOOKINGS, JSON.stringify(list)); }
+function saveBookingsLocal(list: Booking[]) { localStorage.setItem(LS_BOOKINGS, JSON.stringify(list)); }
 
-function loadConfig(): Config {
+function loadConfigLocal(): Config {
   const raw = localStorage.getItem(LS_CONFIG);
   if (!raw) return defaultConfig;
   try { return JSON.parse(raw); } catch { return defaultConfig; }
 }
-function saveConfig(cfg: Config) { localStorage.setItem(LS_CONFIG, JSON.stringify(cfg)); }
+function saveConfigLocal(cfg: Config) { localStorage.setItem(LS_CONFIG, JSON.stringify(cfg)); }
 
 // Helpers de tempo
 function timeToMin(t:"HH:MM"|string){ const [h,m] = t.split(":").map(Number); return h*60+m; }
 function minToTime(min:number){ const h = Math.floor(min/60), m = min%60; return `${pad(h)}:${pad(m)}`; }
-
 function dateToISO(d:Date){ return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())).toISOString(); }
 function getDayBookings(bookings: Booking[], day: Date){
   const iso = dateToISO(day);
   return bookings.filter(b=> b.dataISO===iso).sort((x,y)=> x.inicioMin - y.inicioMin);
 }
 
-function slotsDisponiveis(cfg:Config, serv:Service, dia:Date, bookings: Booking[]){
-  const abertura = timeToMin(cfg.horaAbertura);
-  const fechamento = timeToMin(cfg.horaFechamento);
-  const step = cfg.intervaloMin;
-  const ocupados = getDayBookings(bookings, dia);
-
-  const possiveis:number[] = [];
-  for (let t = abertura; t + serv.duracaoMin <= fechamento; t += step){
-    const fim = t + serv.duracaoMin;
-    const conflito = ocupados.some(b => !(fim <= b.inicioMin || t >= b.fimMin));
-    if (!conflito) possiveis.push(t);
-  }
-  return possiveis;
+// ===== Supabase helpers =====
+async function sbFetchServices(): Promise<Service[]|null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("services")
+    .select("id,nome: name,duracaoMin: duration_min,preco: price")
+    .order("name", { ascending: true });
+  if (error) { console.error(error); return null; }
+  return (data || []).map(r=> ({ id:r.id, nome:r.nome, duracaoMin:r.duracaoMin, preco:r.preco }));
 }
+
+async function sbInsertService(s: Omit<Service,'id'>){
+  if (!supabase) return;
+  const { error } = await supabase.from("services").insert({ name: s.nome, duration_min: s.duracaoMin, price: s.preco });
+  if (error) throw error;
+}
+async function sbDeleteService(id:string){ if (supabase) { const { error } = await supabase.from("services").delete().eq("id", id); if (error) throw error; } }
+
+async function sbFetchConfig(): Promise<Config|null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase.from("config").select("nomeBarbearia: shop_name, intervaloMin: slot_min, diasAtivos: days_active, horaAbertura: open_time, horaFechamento: close_time").single();
+  if (error) { console.error(error); return null; }
+  const cfg = data as unknown as Config;
+  return {
+    nomeBarbearia: cfg.nomeBarbearia ?? defaultConfig.nomeBarbearia,
+    intervaloMin: cfg.intervaloMin ?? defaultConfig.intervaloMin,
+    diasAtivos: (cfg.diasAtivos ?? defaultConfig.diasAtivos) as number[],
+    horaAbertura: cfg.horaAbertura ?? defaultConfig.horaAbertura,
+    horaFechamento: cfg.horaFechamento ?? defaultConfig.horaFechamento,
+  };
+}
+async function sbUpsertConfig(cfg: Config){
+  if (!supabase) return;
+  const payload = {
+    shop_name: cfg.nomeBarbearia,
+    slot_min: cfg.intervaloMin,
+    days_active: cfg.diasAtivos,
+    open_time: cfg.horaAbertura,
+    close_time: cfg.horaFechamento,
+    id: 1,
+  };
+  const { error } = await supabase.from("config").upsert(payload, { onConflict: "id" });
+  if (error) throw error;
+}
+
+async function sbFetchBookingsByISO(iso: string): Promise<Booking[]|null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("bookings")
+    .select("id,cliente: customer_name,telefone: phone,dataISO: date_iso,inicioMin: start_min,fimMin: end_min,servicoId: service_id,observacoes: notes, services(name,duration_min,price)")
+    .eq("date_iso", iso)
+    .order("start_min", { ascending: true });
+  if (error) { console.error(error); return null; }
+  return (data || []).map(r=> ({
+    id: r.id,
+    cliente: r.cliente,
+    telefone: r.telefone,
+    dataISO: r.dataISO,
+    inicioMin: r.inicioMin,
+    fimMin: r.fimMin,
+    servicoId: r.servicoId,
+    observacoes: r.observacoes ?? undefined,
+  }));
+}
+
+async function sbInsertBooking(b: Omit<Booking,'id'>){
+  if (!supabase) return;
+  const { error } = await supabase.from("bookings").insert({
+    customer_name: b.cliente,
+    phone: b.telefone,
+    date_iso: b.dataISO,
+    start_min: b.inicioMin,
+    end_min: b.fimMin,
+    service_id: b.servicoId,
+    notes: b.observacoes ?? null,
+  });
+  if (error) throw error;
+}
+async function sbDeleteBooking(id:string){ if (supabase){ const { error } = await supabase.from("bookings").delete().eq("id", id); if (error) throw error; } }
 
 // Componentes auxiliares
 function SectionTitle({icon:Icon, title}:{icon:any; title:string}){
@@ -135,21 +207,33 @@ function AdminPanel({services, setServices, cfg, setCfg}:{
 }){
   const [novo, setNovo] = useState({nome:"", duracaoMin:30, preco:50});
 
-  function addService(){
+  async function addService(){
     if(!novo.nome.trim()) return toast.error("Dê um nome ao serviço");
-    const list = [...services, { id: crypto.randomUUID(), ...novo } as Service];
-    setServices(list); saveServices(list);
+    if (supabase) {
+      try { await sbInsertService(novo as Omit<Service,'id'>); toast.success("Serviço adicionado"); } catch(e:any){ toast.error("Erro ao salvar serviço online"); console.error(e); }
+      const s = await sbFetchServices(); if (s) setServices(s);
+    } else {
+      const list = [...services, { id: crypto.randomUUID(), ...novo } as Service];
+      setServices(list); saveServicesLocal(list);
+    }
     setNovo({nome:"", duracaoMin:30, preco:50});
   }
 
-  function removeService(id:string){
-    const list = services.filter(s=> s.id!==id);
-    setServices(list); saveServices(list);
+  async function removeService(id:string){
+    if (supabase) {
+      try { await sbDeleteService(id); toast("Serviço removido"); } catch(e:any){ toast.error("Erro ao remover serviço"); console.error(e); }
+      const s = await sbFetchServices(); if (s) setServices(s);
+    } else {
+      const list = services.filter(s=> s.id!==id);
+      setServices(list); saveServicesLocal(list);
+    }
   }
 
-  function updateCfg<K extends keyof Config>(k:K, v:Config[K]){
+  async function updateCfg<K extends keyof Config>(k:K, v:Config[K]){
     const next = { ...cfg, [k]: v };
-    setCfg(next); saveConfig(next);
+    setCfg(next);
+    if (supabase) { try { await sbUpsertConfig(next); } catch(e:any){ console.error(e); toast.error("Erro ao salvar config"); } }
+    else { saveConfigLocal(next); }
   }
 
   return (
@@ -232,11 +316,11 @@ function AdminPanel({services, setServices, cfg, setCfg}:{
 }
 
 export default function App(){
-  const [services, setServices] = useState<Service[]>(loadServices());
-  const [bookings, setBookings] = useState<Booking[]>(loadBookings());
-  const [cfg, setCfg] = useState<Config>(loadConfig());
+  const [services, setServices] = useState<Service[]>(loadServicesLocal());
+  const [bookings, setBookings] = useState<Booking[]>(loadBookingsLocal()); // manteremos só os do dia atual
+  const [cfg, setCfg] = useState<Config>(loadConfigLocal());
 
-  const [servId, setServId] = useState<string>(services[0]?.id ?? "");
+  const [servId, setServId] = useState<string>("");
   const [date, setDate] = useState<Date>(new Date());
   const [inicio, setInicio] = useState<number|undefined>(undefined);
 
@@ -245,18 +329,38 @@ export default function App(){
   const [telefone, setTelefone] = useState("");
   const [obs, setObs] = useState("");
 
-  // modo barbeiro (sem login, via PIN fixo 1801)
+  // modo barbeiro (PIN fixo 1801)
   const [barberMode, setBarberMode] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [pinTyped, setPinTyped] = useState("");
 
-  useEffect(()=> saveServices(services), [services]);
-  useEffect(()=> saveBookings(bookings), [bookings]);
-
-  // Normaliza seleção de serviço quando lista muda
+  // boot: carregar dados do Supabase (ou manter local)
   useEffect(()=>{
-    if (!services.find(s=> s.id===servId)) setServId(services[0]?.id ?? "");
-  }, [services]);
+    (async()=>{
+      if (!supabase){ toast.info("Modo offline (LocalStorage)"); return; }
+      const [s, c] = await Promise.all([sbFetchServices(), sbFetchConfig()]);
+      if (s && s.length){ setServices(s); } else { setServices(defaultServices); }
+      if (c){ setCfg(c); }
+    })();
+  }, []);
+
+  // quando data mudar, buscar agendamentos do dia no Supabase
+  useEffect(()=>{
+    (async()=>{
+      const iso = dateToISO(date);
+      if (supabase){
+        const day = await sbFetchBookingsByISO(iso);
+        if (day) { setBookings(day); saveBookingsLocal(day); }
+      } else {
+        // fallback: filtra os do dia no local
+        const local = loadBookingsLocal();
+        setBookings(getDayBookings(local, date));
+      }
+    })();
+  }, [date]);
+
+  // garantias
+  useEffect(()=>{ if (!servId && services[0]) setServId(services[0].id); }, [services, servId]);
 
   const servico = useMemo(()=> services.find(s=> s.id===servId), [services, servId]);
   const diaAtivo = cfg.diasAtivos.includes(date.getDay());
@@ -266,34 +370,51 @@ export default function App(){
     return slotsDisponiveis(cfg, servico, date, bookings);
   }, [cfg, servico, date, bookings]);
 
-  function reservar(){
+  async function reservar(){
     if(!servico) return toast.error("Escolha um serviço");
     if(!diaAtivo) return toast.error("Este dia não está disponível");
     if(inicio===undefined) return toast.error("Selecione um horário");
     if(!cliente.trim()) return toast.error("Informe seu nome");
 
     const fim = inicio + servico.duracaoMin;
-    const conflito = getDayBookings(bookings, date).some(b => !(fim <= b.inicioMin || inicio >= b.fimMin));
+    const conflito = bookings.some(b => !(fim <= b.inicioMin || inicio >= b.fimMin));
     if(conflito) return toast.error("Este horário acabou de ser ocupado. Tente outro.");
 
-    const novo: Booking = {
-      id: crypto.randomUUID(),
-      cliente, telefone, observacoes: obs,
+    const novo: Omit<Booking,'id'> = {
+      cliente, telefone, observacoes: obs || undefined,
       dataISO: dateToISO(date),
       inicioMin: inicio, fimMin: fim,
       servicoId: servico.id,
     };
-    const list = [...bookings, novo];
-    setBookings(list);
-    toast.success("Agendamento confirmado!");
+
+    if (supabase){
+      try { await sbInsertBooking(novo); toast.success("Agendamento confirmado!"); }
+      catch(e:any){ console.error(e); toast.error("Erro ao salvar no servidor"); return; }
+      // refetch dia
+      const day = await sbFetchBookingsByISO(novo.dataISO);
+      if (day) { setBookings(day); saveBookingsLocal(day); }
+    } else {
+      const withId: Booking = { id: crypto.randomUUID(), ...novo } as Booking;
+      const list = [...bookings, withId];
+      setBookings(list); saveBookingsLocal(list);
+      toast.success("Agendamento confirmado (local)!");
+    }
+
+    // limpa form
     setInicio(undefined); setCliente(""); setTelefone(""); setObs("");
   }
 
-  function cancelar(id:string){
+  async function cancelar(id:string){
     if(!barberMode){ toast.error("Apenas o barbeiro pode cancelar. Ative o Modo Barbeiro."); return; }
-    const list = bookings.filter(b=> b.id!==id);
-    setBookings(list);
-    toast("Agendamento cancelado.");
+    if (supabase){
+      try { await sbDeleteBooking(id); toast("Agendamento cancelado."); } catch(e:any){ console.error(e); toast.error("Erro ao cancelar"); return; }
+      const day = await sbFetchBookingsByISO(dateToISO(date));
+      if (day) { setBookings(day); saveBookingsLocal(day); }
+    } else {
+      const list = bookings.filter(b=> b.id!==id);
+      setBookings(list); saveBookingsLocal(list);
+      toast("Agendamento cancelado (local).");
+    }
   }
 
   const doDia = useMemo(()=> getDayBookings(bookings, date), [bookings, date]);
@@ -304,7 +425,7 @@ export default function App(){
         <header className="flex items-center justify-between">
           <h1 className="text-2xl md:text-3xl font-bold">{cfg.nomeBarbearia} — Agendamentos</h1>
           <div className="flex items-center gap-2">
-            {/* Botão/Modal do Modo Barbeiro */}
+            {/* Modo Barbeiro (PIN 1801) */}
             <Dialog open={pinOpen} onOpenChange={setPinOpen}>
               <DialogTrigger asChild>
                 {!barberMode ? (
@@ -319,7 +440,7 @@ export default function App(){
                 </DialogHeader>
                 <div className="space-y-3">
                   <Label>Digite o PIN (senha única)</Label>
-                  <Input type="password" value={pinTyped} onChange={e=> setPinTyped(e.target.value)} placeholder="****" />
+                  <Input type="password" value={pinTyped} onChange={e=> setPinTyped(e.target.value)} placeholder="1801" />
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" onClick={()=> { setPinTyped(""); setPinOpen(false); }}>Cancelar</Button>
                     <Button onClick={()=> {
@@ -337,7 +458,7 @@ export default function App(){
               </DialogContent>
             </Dialog>
 
-            {/* Botão Admin — só aparece no modo barbeiro */}
+            {/* Admin só no modo barbeiro */}
             {barberMode && (
               <Dialog>
                 <DialogTrigger asChild>
@@ -428,7 +549,7 @@ export default function App(){
                   </div>
 
                   <Button className="w-full rounded-xl" onClick={reservar}>Confirmar agendamento</Button>
-                  <p className="text-xs opacity-70">*Armazenado localmente neste dispositivo (MVP). Integração com backend/WhatsApp pode ser adicionada.</p>
+                  <p className="text-xs opacity-70">Se configurado, os dados são salvos no Supabase. Caso contrário, ficam apenas neste dispositivo.</p>
                 </CardContent>
               </Card>
             </div>
@@ -471,7 +592,7 @@ export default function App(){
         </Tabs>
 
         <footer className="text-sm opacity-70 text-center pt-4">
-          MVP local • Para publicar: exporte para Next.js ou Vite e conecte a um backend (Supabase/Firebase) e envio WhatsApp.
+          MVP com Supabase opcional • Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY para salvar online.
         </footer>
       </div>
     </div>
