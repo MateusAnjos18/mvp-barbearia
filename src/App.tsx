@@ -637,7 +637,7 @@ useEffect(() => {
                   </div>
 
                   <Button className="w-full rounded-xl" onClick={reservar}>Confirmar agendamento</Button>
-                  <p className="text-xs opacity-70">Se configurado, os dados são salvos no Supabase. Caso contrário, ficam apenas neste dispositivo.</p>
+                  <p className="text-xs opacity-70">Depois de enviado, os dados so podem ser excluidos pelo Barbeiro, verifique os dados antes de enviar.</p>
                 </CardContent>
               </Card>
             </div>
@@ -724,7 +724,7 @@ useEffect(() => {
         </Tabs>
 
         <footer className="text-sm opacity-70 text-center pt-4">
-          MVP com Supabase opcional • Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY para salvar online.
+          Desenvolvido por Mateus Magalhães dos Anjos | 2025
         </footer>
       </div>
     </div>
