@@ -399,6 +399,34 @@ export default function App(){
       }
     })();
   }, [date]);
+  // Realtime: atualiza a agenda do dia quando alguém cria/cancela
+useEffect(() => {
+  if (!supabase) return;
+  const iso = dateToISO(date); // mesmo formato salvo na coluna date_iso (UTC meia-noite)
+
+  const channel = supabase
+    .channel(`bookings-realtime-${iso}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'bookings',
+        // só eventos do dia selecionado
+        filter: `date_iso=eq.${iso}`,
+      },
+      async () => {
+        const day = await sbFetchBookingsByISO(iso);
+        if (day) setBookings(day);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [date]);
+
 
   // garantias
   useEffect(()=>{ if (!servId && services[0]) setServId(services[0].id); }, [services, servId]);
