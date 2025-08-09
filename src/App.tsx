@@ -4,10 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Calendar } from "@/components/ui/calendar";
 import { toast } from "sonner";
 import { Plus, Scissors, Clock, CalendarDays, Settings, Trash2 } from "lucide-react";
@@ -25,7 +23,6 @@ type Config = {
   diasAtivos: number[]; // 0=Dom ... 6=Sáb
   horaAbertura: string; // "09:00"
   horaFechamento: string; // "18:00"
-  barberPin?: string; // PIN simples para modo barbeiro
 };
 
 // Storage helpers
@@ -46,7 +43,6 @@ const defaultConfig: Config = {
   diasAtivos: [1,2,3,4,5,6], // seg-sáb
   horaAbertura: "09:00",
   horaFechamento: "19:00",
-  barberPin: "1234",
 };
 
 function loadServices(): Service[] {
@@ -74,10 +70,7 @@ function saveConfig(cfg: Config) { localStorage.setItem(LS_CONFIG, JSON.stringif
 function timeToMin(t:"HH:MM"|string){ const [h,m] = t.split(":").map(Number); return h*60+m; }
 function minToTime(min:number){ const h = Math.floor(min/60), m = min%60; return `${pad(h)}:${pad(m)}`; }
 
-function sameDay(a:Date,b:Date){ return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
-
 function dateToISO(d:Date){ return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())).toISOString(); }
-
 function getDayBookings(bookings: Booking[], day: Date){
   const iso = dateToISO(day);
   return bookings.filter(b=> b.dataISO===iso).sort((x,y)=> x.inicioMin - y.inicioMin);
@@ -92,7 +85,6 @@ function slotsDisponiveis(cfg:Config, serv:Service, dia:Date, bookings: Booking[
   const possiveis:number[] = [];
   for (let t = abertura; t + serv.duracaoMin <= fechamento; t += step){
     const fim = t + serv.duracaoMin;
-    // checa conflito com reservas existentes
     const conflito = ocupados.some(b => !(fim <= b.inicioMin || t >= b.fimMin));
     if (!conflito) possiveis.push(t);
   }
@@ -134,7 +126,7 @@ function TimeButton({min, selected, onClick}:{min:number; selected:boolean; onCl
   );
 }
 
-// Painel administrativo simples
+// Painel administrativo
 function AdminPanel({services, setServices, cfg, setCfg}:{
   services: Service[];
   setServices: (s:Service[])=>void;
@@ -167,6 +159,35 @@ function AdminPanel({services, setServices, cfg, setCfg}:{
           <CardTitle>Serviços</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+            <Input placeholder="Nome" value={novo.nome} onChange={e=> setNovo(p=>({...p, nome:e.target.value}))} />
+            <Input type="number" min={5} step={5} value={novo.duracaoMin}
+              onChange={e=> setNovo(p=>({...p, duracaoMin: Number(e.target.value)}))} placeholder="Duração (min)" />
+            <Input type="number" min={0} step={1} value={novo.preco}
+              onChange={e=> setNovo(p=>({...p, preco: Number(e.target.value)}))} placeholder="Preço (R$)" />
+            <Button onClick={addService} className="w-full"><Plus className="w-4 h-4 mr-2"/>Adicionar</Button>
+          </div>
+          <div className="space-y-2">
+            {services.map(s=> (
+              <div key={s.id} className="flex items-center justify-between border rounded-xl p-3">
+                <div>
+                  <div className="font-medium">{s.nome}</div>
+                  <div className="text-sm opacity-75">{s.duracaoMin} min · {money(s.preco)}</div>
+                </div>
+                <Button variant="destructive" size="icon" onClick={()=> removeService(s.id)}>
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Configuração de Agenda</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Label>Nome da barbearia</Label>
@@ -184,11 +205,6 @@ function AdminPanel({services, setServices, cfg, setCfg}:{
             <div>
               <Label>Fecha às</Label>
               <Input type="time" value={cfg.horaFechamento} onChange={e=> updateCfg("horaFechamento", e.target.value)} />
-            </div>
-            <div className="sm:col-span-2">
-              <Label>PIN do barbeiro (somente números)</Label>
-              <Input type="password" value={cfg.barberPin || ""} onChange={e=> updateCfg("barberPin", e.target.value)} placeholder="ex.: 1234" />
-              <p className="text-xs opacity-70 mt-1">O PIN habilita o <strong>Modo Barbeiro</strong> para cancelar agendamentos. Não compartilhe.</p>
             </div>
           </div>
 
@@ -229,7 +245,7 @@ export default function App(){
   const [telefone, setTelefone] = useState("");
   const [obs, setObs] = useState("");
 
-  // modo barbeiro (sem login, via PIN)
+  // modo barbeiro (sem login, via PIN fixo 1801)
   const [barberMode, setBarberMode] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [pinTyped, setPinTyped] = useState("");
@@ -257,7 +273,6 @@ export default function App(){
     if(!cliente.trim()) return toast.error("Informe seu nome");
 
     const fim = inicio + servico.duracaoMin;
-    // segurança: revalidar conflitos
     const conflito = getDayBookings(bookings, date).some(b => !(fim <= b.inicioMin || inicio >= b.fimMin));
     if(conflito) return toast.error("Este horário acabou de ser ocupado. Tente outro.");
 
@@ -271,7 +286,6 @@ export default function App(){
     const list = [...bookings, novo];
     setBookings(list);
     toast.success("Agendamento confirmado!");
-    // limpa form
     setInicio(undefined); setCliente(""); setTelefone(""); setObs("");
   }
 
@@ -290,6 +304,7 @@ export default function App(){
         <header className="flex items-center justify-between">
           <h1 className="text-2xl md:text-3xl font-bold">{cfg.nomeBarbearia} — Agendamentos</h1>
           <div className="flex items-center gap-2">
+            {/* Botão/Modal do Modo Barbeiro */}
             <Dialog open={pinOpen} onOpenChange={setPinOpen}>
               <DialogTrigger asChild>
                 {!barberMode ? (
@@ -303,31 +318,39 @@ export default function App(){
                   <DialogTitle>Entrar no Modo Barbeiro</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3">
-                  <Label>Digite o PIN configurado</Label>
-                  <Input type="password" value={pinTyped} onChange={e=> setPinTyped(e.target.value)} placeholder="ex.: 1234" />
+                  <Label>Digite o PIN (senha única)</Label>
+                  <Input type="password" value={pinTyped} onChange={e=> setPinTyped(e.target.value)} placeholder="1801" />
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" onClick={()=> { setPinTyped(""); setPinOpen(false); }}>Cancelar</Button>
                     <Button onClick={()=> {
-                      if((cfg.barberPin||"").trim().length===0){ toast.error("Defina um PIN em Configurar > Agenda"); return; }
-                      if(pinTyped===cfg.barberPin){ setBarberMode(true); setPinOpen(false); setPinTyped(""); toast.success("Modo Barbeiro ativado"); }
-                      else { toast.error("PIN incorreto"); }
+                      if(pinTyped === "1801"){
+                        setBarberMode(true);
+                        setPinOpen(false);
+                        setPinTyped("");
+                        toast.success("Modo Barbeiro ativado");
+                      } else {
+                        toast.error("PIN incorreto");
+                      }
                     }}>Entrar</Button>
                   </div>
                 </div>
               </DialogContent>
             </Dialog>
 
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="outline" className="rounded-xl"><Settings className="w-4 h-4 mr-2"/> Admin</Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-4xl">
-                <DialogHeader>
-                  <DialogTitle>Configurar</DialogTitle>
-                </DialogHeader>
-                <AdminPanel services={services} setServices={setServices} cfg={cfg} setCfg={setCfg} />
-              </DialogContent>
-            </Dialog>
+            {/* Botão Admin — só aparece no modo barbeiro */}
+            {barberMode && (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button variant="outline" className="rounded-xl"><Settings className="w-4 h-4 mr-2"/> Admin</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-4xl">
+                  <DialogHeader>
+                    <DialogTitle>Configurar</DialogTitle>
+                  </DialogHeader>
+                  <AdminPanel services={services} setServices={setServices} cfg={cfg} setCfg={setCfg} />
+                </DialogContent>
+              </Dialog>
+            )}
           </div>
         </header>
 
