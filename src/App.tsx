@@ -79,10 +79,28 @@ function timeToMin(t:"HH:MM"|string){ const [h,m] = t.split(":").map(Number); re
 function minToTime(min:number){ const h = Math.floor(min/60), m = min%60; return `${pad(h)}:${pad(m)}`; }
 function isoToLocalDateString(iso: string){ const d = new Date(iso); return d.toLocaleDateString(); }
 function dateToISO(d:Date){ return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())).toISOString(); }
-function getDayBookings(bookings: Booking[], day: Date){
+
+// Helper seguro: filtra agendamentos por dia
+function getBookingsForDay(bookings: Booking[], day: Date){
   const iso = dateToISO(day);
   return bookings.filter(b=> b.dataISO===iso).sort((x,y)=> x.inicioMin - y.inicioMin);
 }
+
+function slotsDisponiveis(cfg:Config, serv:Service, dia:Date, bookings: Booking[]){
+  const abertura = timeToMin(cfg.horaAbertura);
+  const fechamento = timeToMin(cfg.horaFechamento);
+  const step = cfg.intervaloMin;
+  const ocupados = getBookingsForDay(bookings, dia);
+
+  const possiveis:number[] = [];
+  for (let t = abertura; t + serv.duracaoMin <= fechamento; t += step){
+    const fim = t + serv.duracaoMin;
+    const conflito = ocupados.some(b => !(fim <= b.inicioMin || t >= b.fimMin));
+    if (!conflito) possiveis.push(t);
+  }
+  return possiveis;
+}
+
 
 // ===== Supabase helpers =====
 async function sbFetchServices(): Promise<Service[]|null> {
@@ -377,7 +395,7 @@ export default function App(){
       } else {
         // fallback: filtra os do dia no local
         const local = loadBookingsLocal();
-        setBookings(getDayBookings(local, date));
+        setBookings(getBookingsForDay(local, date));
       }
     })();
   }, [date]);
@@ -440,7 +458,7 @@ export default function App(){
     }
   }
 
-  const doDia = useMemo(()=> getDayBookings(bookings, date), [bookings, date]);
+  const doDia = useMemo(()=> getBookingsForDay(bookings, date), [bookings, date]);
 
   // estado e ação para "Todos os agendamentos" (Modo Barbeiro)
   const [allBookings, setAllBookings] = useState<Booking[] | null>(null);
