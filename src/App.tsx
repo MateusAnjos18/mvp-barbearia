@@ -77,6 +77,7 @@ function saveConfigLocal(cfg: Config) { localStorage.setItem(LS_CONFIG, JSON.str
 // Helpers de tempo
 function timeToMin(t:"HH:MM"|string){ const [h,m] = t.split(":").map(Number); return h*60+m; }
 function minToTime(min:number){ const h = Math.floor(min/60), m = min%60; return `${pad(h)}:${pad(m)}`; }
+function isoToLocalDateString(iso: string){ const d = new Date(iso); return d.toLocaleDateString(); }
 function dateToISO(d:Date){ return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())).toISOString(); }
 function getDayBookings(bookings: Booking[], day: Date){
   const iso = dateToISO(day);
@@ -162,6 +163,27 @@ async function sbInsertBooking(b: Omit<Booking,'id'>){
   if (error) throw error;
 }
 async function sbDeleteBooking(id:string){ if (supabase){ const { error } = await supabase.from("bookings").delete().eq("id", id); if (error) throw error; } }
+
+// Buscar todos os agendamentos (para o Modo Barbeiro)
+async function sbFetchAllBookings(): Promise<Booking[]|null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("bookings")
+    .select("id,customer_name,phone,date_iso,start_min,end_min,service_id,notes")
+    .order("date_iso", { ascending: true })
+    .order("start_min", { ascending: true });
+  if (error) { console.error(error); return null; }
+  return (data || []).map(r=> ({
+    id: r.id,
+    cliente: r.customer_name,
+    telefone: r.phone,
+    dataISO: r.date_iso,
+    inicioMin: r.start_min,
+    fimMin: r.end_min,
+    servicoId: r.service_id,
+    observacoes: r.notes ?? undefined,
+  }));
+}
 
 // Componentes auxiliares
 function SectionTitle({icon:Icon, title}:{icon:any; title:string}){
@@ -316,6 +338,7 @@ function AdminPanel({services, setServices, cfg, setCfg}:{
 }
 
 export default function App(){
+  
   const [services, setServices] = useState<Service[]>(loadServicesLocal());
   const [bookings, setBookings] = useState<Booking[]>(loadBookingsLocal()); // manteremos só os do dia atual
   const [cfg, setCfg] = useState<Config>(loadConfigLocal());
@@ -419,6 +442,24 @@ export default function App(){
 
   const doDia = useMemo(()=> getDayBookings(bookings, date), [bookings, date]);
 
+  // estado e ação para "Todos os agendamentos" (Modo Barbeiro)
+  const [allBookings, setAllBookings] = useState<Booking[] | null>(null);
+  const [loadingAll, setLoadingAll] = useState(false);
+  async function carregarTodos(){
+    setLoadingAll(true);
+    try{
+      if (supabase){
+        const all = await sbFetchAllBookings();
+        setAllBookings(all ?? []);
+      } else {
+        // fallback: pega o que existir no localStorage
+        setAllBookings(loadBookingsLocal());
+      }
+    } finally {
+      setLoadingAll(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted/30 p-4 md:p-8">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -476,9 +517,10 @@ export default function App(){
         </header>
 
         <Tabs defaultValue="agendar">
-          <TabsList className="grid grid-cols-2 w-full md:w-auto rounded-2xl">
+          <TabsList className="grid grid-cols-2 w-full md:w-auto rounded-2xl gap-2">
             <TabsTrigger value="agendar">Agendar</TabsTrigger>
             <TabsTrigger value="agenda">Agenda do dia</TabsTrigger>
+            {barberMode && (<TabsTrigger value="todos">Todos (barbeiro)</TabsTrigger>)}
           </TabsList>
 
           <TabsContent value="agendar" className="mt-6">
@@ -589,6 +631,50 @@ export default function App(){
               </Card>
             </div>
           </TabsContent>
+
+          {barberMode && (
+          <TabsContent value="todos" className="mt-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Todos os agendamentos</h3>
+              <Button onClick={carregarTodos} disabled={loadingAll} className="rounded-xl">
+                {loadingAll ? 'Carregando...' : (allBookings ? 'Recarregar' : 'Carregar')}
+              </Button>
+            </div>
+
+            {!allBookings && <p className="opacity-70">Clique em <strong>Carregar</strong> para listar todos.</p>}
+            {allBookings && allBookings.length===0 && <p className="opacity-70">Nenhum agendamento encontrado.</p>}
+
+            {allBookings && allBookings.length>0 && (
+              <div className="space-y-6">
+                {Object.entries(allBookings.reduce((acc: Record<string, Booking[]>, b)=>{
+                  (acc[b.dataISO] ||= []).push(b);
+                  return acc;
+                }, {})).map(([iso, arr])=> (
+                  <Card key={iso}>
+                    <CardHeader>
+                      <CardTitle>{isoToLocalDateString(iso)}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      {arr.map(b=> {
+                        const s = services.find(x=> x.id===b.servicoId);
+                        return (
+                          <div key={b.id} className="border rounded-xl p-3 flex items-center justify-between">
+                            <div>
+                              <div className="font-medium">{minToTime(b.inicioMin)} — {minToTime(b.fimMin)} · {s?.nome}</div>
+                              <div className="text-sm opacity-80">{b.cliente} · {s? money(s.preco):""}</div>
+                              {b.observacoes && <div className="text-xs opacity-70 mt-1">Obs: {b.observacoes}</div>}
+                            </div>
+                            <Button variant="destructive" onClick={()=> cancelar(b.id)}>Cancelar</Button>
+                          </div>
+                        );
+                      })}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+          )}
         </Tabs>
 
         <footer className="text-sm opacity-70 text-center pt-4">
